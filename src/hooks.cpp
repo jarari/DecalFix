@@ -36,6 +36,13 @@ namespace Hooks
 			TriShapeDataAccess*);
 		using CreatePositionData_t = void* (*)(RE::BSTriShape*);
 		using GetTriShapeDataAccess_t = TriShapeDataAccess* (*)(RE::BSTriShape*, bool);
+		using CreatePositionDataFromVertexIndexData_t = void* (*)(
+			const void*,
+			const void*,
+			std::uint32_t,
+			std::uint32_t,
+			const void*,
+			bool);
 
 		struct DecalPatchState
 		{
@@ -61,6 +68,7 @@ namespace Hooks
 		ApplySkinningToGeometry_t originalApplySkinningToGeometry{ nullptr };
 		CreatePositionData_t originalCreatePositionData{ nullptr };
 		GetTriShapeDataAccess_t originalEffectShaderGetTriShapeDataAccess{ nullptr };
+		CreatePositionDataFromVertexIndexData_t originalEffectShaderCreatePositionDataFromVertexIndexData{ nullptr };
 
 		thread_local DecalPatchState decalPatchState;
 		thread_local EffectShaderPatchState effectShaderPatchState;
@@ -209,6 +217,18 @@ namespace Hooks
 
 		TriShapeDataAccess* EffectShaderGetTriShapeDataAccess(RE::BSTriShape* a_shape, bool a_arg2)
 		{
+			if (!effectShaderPatchState.active && a_shape) {
+				const VertexDesc originalDesc{ a_shape->vertexDesc.desc };
+				if (originalDesc.HasFlag(Vertex::VF_FULLPREC)) {
+					const auto compactDesc = Utils::MakeCompactDesc(originalDesc);
+					effectShaderPatchState = {};
+					effectShaderPatchState.active = true;
+					effectShaderPatchState.shape = a_shape;
+					effectShaderPatchState.originalDesc = originalDesc.desc;
+					effectShaderPatchState.compactDesc = compactDesc.desc;
+				}
+			}
+
 			if (effectShaderPatchState.active && effectShaderPatchState.shape == a_shape) {
 				const VertexDesc compactDesc{ effectShaderPatchState.compactDesc };
 				const VertexDesc originalDesc{ effectShaderPatchState.originalDesc };
@@ -259,6 +279,30 @@ namespace Hooks
 			return originalEffectShaderGetTriShapeDataAccess(a_shape, a_arg2);
 		}
 
+		void* EffectShaderCreatePositionDataFromVertexIndexData(
+			const void*   a_vertices,
+			const void*   a_indices,
+			std::uint32_t a_vertexCount,
+			std::uint32_t a_indexCount,
+			const void*   a_offsets,
+			bool          a_hasSkinning)
+		{
+			auto* result = originalEffectShaderCreatePositionDataFromVertexIndexData(
+				a_vertices,
+				a_indices,
+				a_vertexCount,
+				a_indexCount,
+				a_offsets,
+				a_hasSkinning);
+
+			if (effectShaderPatchState.active && effectShaderPatchState.shape) {
+				effectShaderPatchState.shape->vertexDesc = VertexDesc{ effectShaderPatchState.originalDesc };
+				effectShaderPatchState = {};
+			}
+
+			return result;
+		}
+
 		void* CreatePositionData(RE::BSTriShape* a_shape)
 		{
 			if (!a_shape) {
@@ -286,35 +330,49 @@ namespace Hooks
 
 		void InstallDecalProjectionHooks()
 		{
-			if (!REX::FModule::IsRuntimeOG()) {
-				return;
-			}
-
+			const auto isOG = REX::FModule::IsRuntimeOG();
 			REL::Relocation<std::uintptr_t> decalProjection{ REL::ID{ 825090, 2212077 } };
-			originalApplySkinningToGeometry = reinterpret_cast<ApplySkinningToGeometry_t>(
-				decalProjection.write_call<5, 0x136>(ApplySkinningToGeometry));
-			originalCreateVertexBuffer = reinterpret_cast<CreateVertexBuffer_t>(
-				decalProjection.write_call<5, 0x6D8>(CreateVertexBuffer));
-			originalCreateTriShape = reinterpret_cast<CreateTriShape_t>(
-				decalProjection.write_call<5, 0x6F9>(CreateTriShape));
-			originalBSSubIndexTriShapeCtor = reinterpret_cast<BSSubIndexTriShapeCtor_t>(
-				decalProjection.write_call<5, 0x78C>(BSSubIndexTriShapeCtor));
+			if (isOG) {
+				originalApplySkinningToGeometry = reinterpret_cast<ApplySkinningToGeometry_t>(
+					decalProjection.write_call<5, 0x136>(ApplySkinningToGeometry));
+				originalCreateVertexBuffer = reinterpret_cast<CreateVertexBuffer_t>(
+					decalProjection.write_call<5, 0x6D8>(CreateVertexBuffer));
+				originalCreateTriShape = reinterpret_cast<CreateTriShape_t>(
+					decalProjection.write_call<5, 0x6F9>(CreateTriShape));
+				originalBSSubIndexTriShapeCtor = reinterpret_cast<BSSubIndexTriShapeCtor_t>(
+					decalProjection.write_call<5, 0x78C>(BSSubIndexTriShapeCtor));
+			} else {
+				originalApplySkinningToGeometry = reinterpret_cast<ApplySkinningToGeometry_t>(
+					decalProjection.write_call<5, 0x135>(ApplySkinningToGeometry));
+				originalCreateVertexBuffer = reinterpret_cast<CreateVertexBuffer_t>(
+					decalProjection.write_call<5, 0x67C>(CreateVertexBuffer));
+				originalCreateTriShape = reinterpret_cast<CreateTriShape_t>(
+					decalProjection.write_call<5, 0x6A6>(CreateTriShape));
+				originalBSSubIndexTriShapeCtor = reinterpret_cast<BSSubIndexTriShapeCtor_t>(
+					decalProjection.write_call<5, 0x742>(BSSubIndexTriShapeCtor));
+			}
 		}
 
 		void InstallEffectShaderParticleHooks()
 		{
-			if (!REX::FModule::IsRuntimeOG()) {
-				return;
+			if (REX::FModule::IsRuntimeOG()) {
+				REL::Relocation<std::uintptr_t> createPositionData{ REL::ID{ 1037836, 0 } };
+				originalEffectShaderGetTriShapeDataAccess =
+					reinterpret_cast<GetTriShapeDataAccess_t>(
+						createPositionData.write_call<5, 0x37>(EffectShaderGetTriShapeDataAccess));
+
+				REL::Relocation<std::uintptr_t> setupMSTarget{ REL::ID{ 146786, 2194489 } };
+				originalCreatePositionData = reinterpret_cast<CreatePositionData_t>(
+					setupMSTarget.write_call<5, 0xA5>(CreatePositionData));
+			} else {
+				REL::Relocation<std::uintptr_t> setupMSTarget{ REL::ID{ 146786, 2194489 } };
+				originalEffectShaderGetTriShapeDataAccess =
+					reinterpret_cast<GetTriShapeDataAccess_t>(
+						setupMSTarget.write_call<5, 0xD0>(EffectShaderGetTriShapeDataAccess));
+				originalEffectShaderCreatePositionDataFromVertexIndexData =
+					reinterpret_cast<CreatePositionDataFromVertexIndexData_t>(
+						setupMSTarget.write_call<5, 0x155>(EffectShaderCreatePositionDataFromVertexIndexData));
 			}
-
-			REL::Relocation<std::uintptr_t> createPositionData{ REL::ID{ 1037836, 0 } };
-			originalEffectShaderGetTriShapeDataAccess =
-				reinterpret_cast<GetTriShapeDataAccess_t>(
-					createPositionData.write_call<5, 0x37>(EffectShaderGetTriShapeDataAccess));
-
-			REL::Relocation<std::uintptr_t> setupMSTarget{ REL::ID{ 146786, 0 } };
-			originalCreatePositionData = reinterpret_cast<CreatePositionData_t>(
-				setupMSTarget.write_call<5, 0xA5>(CreatePositionData));
 		}
 	}
 

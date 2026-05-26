@@ -6,7 +6,7 @@ namespace Utils
 	{
 		using CalculateBoneMatrices_t = void (*)(RE::BSGeometry*);
 
-		REL::Relocation<CalculateBoneMatrices_t> calculateBoneMatrices{ REL::ID{ 795227, 0 } };
+		REL::Relocation<CalculateBoneMatrices_t> calculateBoneMatrices{ REL::ID{ 795227, 2277105 } };
 
 		void SetAttributeOffsetRaw(std::uint64_t& a_desc, Vertex::Attribute a_attribute, std::uint32_t a_offset)
 		{
