@@ -34,6 +34,8 @@ namespace Hooks
 			void*,
 			void*,
 			TriShapeDataAccess*);
+		using CreatePositionData_t = void* (*)(RE::BSTriShape*);
+		using GetTriShapeDataAccess_t = TriShapeDataAccess* (*)(RE::BSTriShape*, bool);
 
 		struct DecalPatchState
 		{
@@ -44,12 +46,24 @@ namespace Hooks
 			std::vector<std::byte> compactVertices;
 		};
 
+		struct EffectShaderPatchState
+		{
+			bool active{ false };
+			RE::BSTriShape* shape{ nullptr };
+			std::uint64_t originalDesc{ 0 };
+			std::uint64_t compactDesc{ 0 };
+			std::vector<std::byte> compactData;
+		};
+
 		CreateVertexBuffer_t originalCreateVertexBuffer{ nullptr };
 		CreateTriShape_t originalCreateTriShape{ nullptr };
 		BSSubIndexTriShapeCtor_t originalBSSubIndexTriShapeCtor{ nullptr };
 		ApplySkinningToGeometry_t originalApplySkinningToGeometry{ nullptr };
+		CreatePositionData_t originalCreatePositionData{ nullptr };
+		GetTriShapeDataAccess_t originalEffectShaderGetTriShapeDataAccess{ nullptr };
 
 		thread_local DecalPatchState decalPatchState;
+		thread_local EffectShaderPatchState effectShaderPatchState;
 
 		void ApplySkinningToGeometry(
 			RE::BSGeometry*     a_geometry,
@@ -193,6 +207,83 @@ namespace Hooks
 			return result;
 		}
 
+		TriShapeDataAccess* EffectShaderGetTriShapeDataAccess(RE::BSTriShape* a_shape, bool a_arg2)
+		{
+			if (effectShaderPatchState.active && effectShaderPatchState.shape == a_shape) {
+				const VertexDesc compactDesc{ effectShaderPatchState.compactDesc };
+				const VertexDesc originalDesc{ effectShaderPatchState.originalDesc };
+
+				a_shape->vertexDesc = originalDesc;
+				auto* result = originalEffectShaderGetTriShapeDataAccess(a_shape, a_arg2);
+				a_shape->vertexDesc = compactDesc;
+
+				if (result) {
+					const auto* vertexData = Utils::GetVertexData(result);
+					const auto vertexCount = a_shape->numVertices;
+					const auto indexCount = static_cast<std::uint32_t>(a_shape->numTriangles) * 3;
+					const auto originalStride = Utils::GetStride(originalDesc);
+					const auto compactStride = Utils::GetStride(compactDesc);
+
+					if (vertexData && vertexCount > 0 && originalStride > compactStride && compactStride >= 8) {
+						auto* fields = reinterpret_cast<std::uintptr_t*>(result);
+						const auto compactVertexBytes = static_cast<std::uint32_t>(vertexCount) * compactStride;
+						const auto indexBytes = indexCount * sizeof(std::uint16_t);
+						const auto* originalIndexData =
+							fields[0] != 0 ?
+								vertexData + static_cast<std::uint32_t>(fields[4]) :
+								reinterpret_cast<const std::byte*>(fields[6]);
+
+						effectShaderPatchState.compactData.resize(static_cast<std::size_t>(compactVertexBytes) + indexBytes);
+						Utils::RepackFullPrecisionVertices(
+							vertexData,
+							effectShaderPatchState.compactData.data(),
+							vertexCount,
+							originalStride,
+							compactStride);
+						if (originalIndexData && indexBytes > 0) {
+							std::memcpy(effectShaderPatchState.compactData.data() + compactVertexBytes, originalIndexData, indexBytes);
+						}
+
+						fields[5] = reinterpret_cast<std::uintptr_t>(effectShaderPatchState.compactData.data());
+						if (fields[0] != 0) {
+							fields[4] = compactVertexBytes;
+						} else {
+							fields[6] = reinterpret_cast<std::uintptr_t>(effectShaderPatchState.compactData.data() + compactVertexBytes);
+						}
+					}
+				}
+
+				return result;
+			}
+
+			return originalEffectShaderGetTriShapeDataAccess(a_shape, a_arg2);
+		}
+
+		void* CreatePositionData(RE::BSTriShape* a_shape)
+		{
+			if (!a_shape) {
+				return originalCreatePositionData(a_shape);
+			}
+
+			const VertexDesc originalDesc{ a_shape->vertexDesc.desc };
+			if (!originalDesc.HasFlag(Vertex::VF_FULLPREC)) {
+				return originalCreatePositionData(a_shape);
+			}
+
+			const auto compactDesc = Utils::MakeCompactDesc(originalDesc);
+			effectShaderPatchState = {};
+			effectShaderPatchState.active = true;
+			effectShaderPatchState.shape = a_shape;
+			effectShaderPatchState.originalDesc = originalDesc.desc;
+			effectShaderPatchState.compactDesc = compactDesc.desc;
+
+			a_shape->vertexDesc = compactDesc;
+			auto* result = originalCreatePositionData(a_shape);
+			a_shape->vertexDesc = originalDesc;
+			effectShaderPatchState = {};
+			return result;
+		}
+
 		void InstallDecalProjectionHooks()
 		{
 			if (!REX::FModule::IsRuntimeOG()) {
@@ -209,10 +300,27 @@ namespace Hooks
 			originalBSSubIndexTriShapeCtor = reinterpret_cast<BSSubIndexTriShapeCtor_t>(
 				decalProjection.write_call<5, 0x78C>(BSSubIndexTriShapeCtor));
 		}
+
+		void InstallEffectShaderParticleHooks()
+		{
+			if (!REX::FModule::IsRuntimeOG()) {
+				return;
+			}
+
+			REL::Relocation<std::uintptr_t> createPositionData{ REL::ID{ 1037836, 0 } };
+			originalEffectShaderGetTriShapeDataAccess =
+				reinterpret_cast<GetTriShapeDataAccess_t>(
+					createPositionData.write_call<5, 0x37>(EffectShaderGetTriShapeDataAccess));
+
+			REL::Relocation<std::uintptr_t> setupMSTarget{ REL::ID{ 146786, 0 } };
+			originalCreatePositionData = reinterpret_cast<CreatePositionData_t>(
+				setupMSTarget.write_call<5, 0xA5>(CreatePositionData));
+		}
 	}
 
 	void Install()
 	{
 		InstallDecalProjectionHooks();
+		InstallEffectShaderParticleHooks();
 	}
 }
