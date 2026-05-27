@@ -8,6 +8,10 @@ namespace Utils
 
 	[[nodiscard]] std::uint32_t GetStride(VertexDesc a_desc);
 	[[nodiscard]] std::uint32_t GetAttributeOffsetRaw(std::uint64_t a_desc, Vertex::Attribute a_attribute);
+	[[nodiscard]] bool HasVertexPosition(VertexDesc a_desc);
+	[[nodiscard]] bool HasFullPrecisionFlag(VertexDesc a_desc);
+	[[nodiscard]] bool IsStaticFullPrecisionDesc(VertexDesc a_desc);
+	[[nodiscard]] RE::BSGraphics::Renderer* GetRenderer();
 	[[nodiscard]] VertexDesc MakeCompactDesc(VertexDesc a_desc);
 	void RepackFullPrecisionVertices(
 		const std::byte* a_source,

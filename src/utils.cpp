@@ -169,6 +169,31 @@ namespace Utils
 		return static_cast<std::uint32_t>((a_desc >> (4 * static_cast<std::uint8_t>(a_attribute) + 2)) & 0x3C);
 	}
 
+	bool HasVertexPosition(VertexDesc a_desc)
+	{
+		return a_desc.HasFlag(Vertex::VF_VERTEX);
+	}
+
+	bool HasFullPrecisionFlag(VertexDesc a_desc)
+	{
+		return a_desc.HasFlag(Vertex::VF_FULLPREC);
+	}
+
+	bool IsStaticFullPrecisionDesc(VertexDesc a_desc)
+	{
+		return HasVertexPosition(a_desc) && HasFullPrecisionFlag(a_desc);
+	}
+
+	RE::BSGraphics::Renderer* GetRenderer()
+	{
+		auto* rendererData = RE::BSGraphics::GetRendererData();
+		if (!rendererData) {
+			return nullptr;
+		}
+
+		return reinterpret_cast<RE::BSGraphics::Renderer*>(reinterpret_cast<std::byte*>(rendererData) - 0x10);
+	}
+
 	VertexDesc MakeCompactDesc(VertexDesc a_desc)
 	{
 		const auto oldStride = GetStride(a_desc);
